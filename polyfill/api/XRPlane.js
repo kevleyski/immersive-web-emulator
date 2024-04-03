@@ -1,3 +1,5 @@
+import { mat4 } from 'gl-matrix';
+
 /**
  * @see https://immersive-web.github.io/real-world-geometry/plane-detection.html#plane-orientation
  * @enum {string}
@@ -15,13 +17,15 @@ export class XRPlane {
 	 * @param {import('webxr-polyfill/src/api/XRSpace').default} planeSpace
 	 * @param {DOMPointReadOnly[]} pointArray
 	 * @param {XRPlaneOrientation} orientation
+	 * @param {string} semanticLabel
 	 */
-	constructor(planeSpace, pointArray, orientation) {
+	constructor(planeSpace, pointArray, orientation, semanticLabel) {
 		this._planeSpace = planeSpace;
 		this._polygon = pointArray;
 		Object.freeze(this._polygon);
 		this._orientation = orientation;
 		this._lastChangedTime = performance.now();
+		this._semanticLabel = semanticLabel;
 	}
 
 	/**
@@ -54,6 +58,25 @@ export class XRPlane {
 	 */
 	get lastChangedTime() {
 		return this._lastChangedTime;
+	}
+
+	/**
+	 * @type {string}
+	 * @readonly
+	 */
+	get semanticLabel() {
+		return this._semanticLabel;
+	}
+
+	/**
+	 * non-standard
+	 * @param {number[]} position
+	 * @param {number[]} quaternion
+	 */
+	_updateMatrix(position, quaternion) {
+		const meshMatrix = new Float32Array(16);
+		mat4.fromRotationTranslation(meshMatrix, quaternion, position);
+		this._planeSpace._baseMatrix = meshMatrix;
 	}
 }
 

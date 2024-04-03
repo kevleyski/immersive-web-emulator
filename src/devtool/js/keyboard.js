@@ -6,53 +6,12 @@
  */
 
 import { DEVICE, KEYBOARD_CONTROL_MAPPING, OBJECT_NAME } from './constants';
+import { EmulatorSettings, emulatorStates } from './emulatorStates';
 
-import { EmulatorSettings } from './emulatorStates';
-import { JOYSTICKS } from './controllers';
 import { relayKeyboardEvent } from './messenger';
 
-document.addEventListener(
-	'keydown',
-	(event) => {
-		const result = getReservedKeyAction(event.key);
-		if (EmulatorSettings.instance.actionMappingOn && result) {
-			const [handKey, action] = result;
-			onReservedKeyDown(handKey, action);
-			moveJoysticks();
-		} else {
-			passThroughKeyboardEvent(event);
-		}
-	},
-	false,
-);
-
-document.addEventListener(
-	'keyup',
-	(event) => {
-		const result = getReservedKeyAction(event.key);
-		if (result) {
-			const [handKey, action] = result;
-			onReservedKeyUp(handKey, action);
-			moveJoysticks();
-		} else if (EmulatorSettings.instance.actionMappingOn) {
-			passThroughKeyboardEvent(event);
-		}
-	},
-	false,
-);
-
-document.addEventListener(
-	'keypress',
-	(event) => {
-		const result = getReservedKeyAction(event.key);
-		if (!result && EmulatorSettings.instance.actionMappingOn) {
-			passThroughKeyboardEvent(event);
-		}
-	},
-	false,
-);
-
 const emulatedJoysticks = {};
+const JOYSTICKS = emulatorStates.joysticks;
 
 const resetEmulatedJoysticks = () => {
 	emulatedJoysticks.left = {
@@ -69,8 +28,6 @@ const resetEmulatedJoysticks = () => {
 	};
 };
 
-resetEmulatedJoysticks();
-
 const getReservedKeyAction = (key) => {
 	let result = null;
 	Object.entries(KEYBOARD_CONTROL_MAPPING).forEach(([handKey, mapping]) => {
@@ -84,12 +41,6 @@ const getReservedKeyAction = (key) => {
 };
 
 const onReservedKeyDown = (handKey, action) => {
-	const rangeInput = document.getElementById(
-		handKey + '-controller-' + action + '-value',
-	);
-	const pressButton = document.getElementById(
-		handKey + '-controller-' + action + '-press',
-	);
 	switch (action) {
 		case 'joystickLeft':
 			emulatedJoysticks[handKey].left = true;
@@ -105,24 +56,16 @@ const onReservedKeyDown = (handKey, action) => {
 			break;
 		case 'trigger':
 		case 'grip':
-			rangeInput.value = 100;
-			document.getElementById(
-				handKey + '-controller-' + action + '-press',
-			).disabled = true;
-			rangeInput.oninput();
+			emulatorStates.sliders[handKey][action].value = 100;
+			emulatorStates.buttons[handKey][action].disabled = true;
+			emulatorStates.sliders[handKey][action].onInputFunc();
 			break;
 		default:
-			pressButton.click();
+			emulatorStates.buttons[handKey][action].click();
 	}
 };
 
 const onReservedKeyUp = (handKey, action) => {
-	const rangeInput = document.getElementById(
-		handKey + '-controller-' + action + '-value',
-	);
-	const pressButton = document.getElementById(
-		handKey + '-controller-' + action + '-press',
-	);
 	switch (action) {
 		case 'joystickLeft':
 			emulatedJoysticks[handKey].left = false;
@@ -138,14 +81,12 @@ const onReservedKeyUp = (handKey, action) => {
 			break;
 		case 'trigger':
 		case 'grip':
-			rangeInput.value = 0;
-			document.getElementById(
-				handKey + '-controller-' + action + '-press',
-			).disabled = false;
-			rangeInput.oninput();
+			emulatorStates.sliders[handKey][action].value = 0;
+			emulatorStates.buttons[handKey][action].disabled = false;
+			emulatorStates.sliders[handKey][action].onInputFunc();
 			break;
 		default:
-			pressButton.click();
+			emulatorStates.buttons[handKey][action].click();
 	}
 };
 
@@ -171,8 +112,7 @@ const passThroughKeyboardEvent = (event) => {
 
 const moveJoysticks = () => {
 	Object.entries(emulatedJoysticks).forEach(([handKey, directions]) => {
-		const deviceId =
-			handKey == 'left' ? DEVICE.LEFT_CONTROLLER : DEVICE.RIGHT_CONTROLLER;
+		const deviceId = handKey == 'left' ? DEVICE.INPUT_LEFT : DEVICE.INPUT_RIGHT;
 		const deviceName = OBJECT_NAME[deviceId];
 		if (
 			directions.left ||
@@ -180,8 +120,8 @@ const moveJoysticks = () => {
 			directions.forward ||
 			directions.backward
 		) {
-			let axisX = directions.left ? -1 : 0 + directions.right ? 1 : 0;
-			let axisY = directions.forward ? -1 : 0 + directions.backward ? 1 : 0;
+			const axisX = directions.left ? -1 : 0 + directions.right ? 1 : 0;
+			const axisY = directions.forward ? -1 : 0 + directions.backward ? 1 : 0;
 			const normalizeScale = Math.sqrt(axisX * axisX + axisY * axisY);
 
 			if (JOYSTICKS[deviceName]) {
@@ -198,41 +138,48 @@ const moveJoysticks = () => {
 	});
 };
 
-export const setupKeyboardControlButtons = () => {
-	document.getElementById('action-mapping').onclick = function () {
-		EmulatorSettings.instance.actionMappingOn =
-			!EmulatorSettings.instance.actionMappingOn;
-		this.classList.toggle(
-			'button-pressed',
-			EmulatorSettings.instance.actionMappingOn,
-		);
-		EmulatorSettings.instance.write();
-	};
-	document
-		.getElementById('action-mapping')
-		.classList.toggle(
-			'button-pressed',
-			EmulatorSettings.instance.actionMappingOn,
-		);
-	document.getElementById('keyboard-mapping').onclick = function () {
-		alert(`
-      Left Controller Mapping:
-      Joystick: WASD
-      Trigger: E
-      Grip: Q
-      ButtonX: X
-      ButtonY: Z
-      ---------------------------
-      Right Controller Mapping:
-      Joystick: Arrow keys
-      Trigger: Enter
-      Grip: Shift
-      ButtonA: '
-      ButtonB: /
-      `);
-	};
-	// document.getElementById('keyboard-settings').onclick = function () {
-	// 	alert('Keyboard control settings not yet available');
-	// };
+export default function initKeyboardControl() {
+	resetEmulatedJoysticks();
 	window.addEventListener('blur', resetEmulatedJoysticks);
-};
+
+	document.addEventListener(
+		'keydown',
+		(event) => {
+			const result = getReservedKeyAction(event.key);
+			if (EmulatorSettings.instance.actionMappingOn && result) {
+				const [handKey, action] = result;
+				onReservedKeyDown(handKey, action);
+				moveJoysticks();
+			} else {
+				passThroughKeyboardEvent(event);
+			}
+		},
+		false,
+	);
+
+	document.addEventListener(
+		'keyup',
+		(event) => {
+			const result = getReservedKeyAction(event.key);
+			if (result) {
+				const [handKey, action] = result;
+				onReservedKeyUp(handKey, action);
+				moveJoysticks();
+			} else if (EmulatorSettings.instance.actionMappingOn) {
+				passThroughKeyboardEvent(event);
+			}
+		},
+		false,
+	);
+
+	document.addEventListener(
+		'keypress',
+		(event) => {
+			const result = getReservedKeyAction(event.key);
+			if (!result && EmulatorSettings.instance.actionMappingOn) {
+				passThroughKeyboardEvent(event);
+			}
+		},
+		false,
+	);
+}

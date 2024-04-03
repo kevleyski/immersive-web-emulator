@@ -66,6 +66,14 @@ export const emulatorStates = {
 		},
 	},
 	playbackInProgress: false,
+	pinchValues: {
+		'left-hand': 0,
+		'right-hand': 0,
+	},
+	joysticks: {},
+	buttons: {},
+	sliders: {},
+	emulatedDevice: null,
 };
 
 export class EmulatorSettings {
@@ -80,9 +88,17 @@ export class EmulatorSettings {
 		this.stereoOn = false;
 		this.actionMappingOn = true;
 		this.defaultPose = DEFAULT_TRANSFORMS;
-		this.deviceKey = 'Meta Quest Pro';
+		this.deviceKey = 'Meta Quest 3';
 		this.keyboardMappingOn = true;
 		this.roomDimension = { x: 6, y: 3, z: 6 };
+		this.polyfillExcludes = new Set();
+		this.inputMode = 'controllers';
+		this.handPoses = {
+			'left-hand': 'relaxed',
+			'right-hand': 'relaxed',
+		};
+		this.userObjects = {};
+		this.triggerMode = 'normal';
 	}
 
 	load() {
@@ -94,9 +110,14 @@ export class EmulatorSettings {
 				this.stereoOn = settings?.stereoOn ?? false;
 				this.actionMappingOn = settings?.actionMappingOn ?? true;
 				this.defaultPose = settings?.defaultPose ?? DEFAULT_TRANSFORMS;
-				this.deviceKey = settings?.deviceKey ?? 'Meta Quest Pro';
+				this.deviceKey = settings?.deviceKey ?? 'Meta Quest 3';
 				this.keyboardMappingOn = settings?.keyboardMappingOn ?? true;
 				this.roomDimension = settings?.roomDimension ?? { x: 6, y: 3, z: 6 };
+				this.polyfillExcludes = new Set(settings?.polyfillExcludes ?? []);
+				this.inputMode = settings?.inputMode ?? 'controllers';
+				this.handPoses = settings?.handPoses ?? this.handPoses;
+				this.userObjects = settings?.userObjects ?? {};
+				this.triggerMode = settings?.triggerMode ?? 'normal';
 				resolve(result);
 			});
 		});
@@ -111,7 +132,22 @@ export class EmulatorSettings {
 			deviceKey: this.deviceKey,
 			keyboardMappingOn: this.keyboardMappingOn,
 			roomDimension: this.roomDimension,
+			polyfillExcludes: Array.from(this.polyfillExcludes),
+			inputMode: this.inputMode,
+			handPoses: this.handPoses,
+			userObjects: this.userObjects,
+			triggerMode: this.triggerMode,
 		});
+		return new Promise((resolve) => {
+			localStorage.set(settings, () => {
+				resolve(settings);
+			});
+		});
+	}
+
+	clear() {
+		const settings = {};
+		settings[STORAGE_KEY] = null;
 		return new Promise((resolve) => {
 			localStorage.set(settings, () => {
 				resolve(settings);

@@ -9,6 +9,7 @@ import {
 	MeshBasicMaterial,
 	Object3D,
 	PerspectiveCamera,
+	PlaneGeometry,
 	Raycaster,
 	Scene,
 	Vector3,
@@ -16,7 +17,8 @@ import {
 } from 'three';
 import { XRPlane, XRPlaneOrientation } from './api/XRPlane';
 
-import { BoxLineGeometry } from 'three/examples/jsm/geometries/BoxLineGeometry';
+import { BoxLineGeometry } from 'three/examples/jsm/geometries/BoxLineGeometry.js';
+import { XRMesh } from './api/XRMesh';
 import XRSpace from 'webxr-polyfill/src/api/XRSpace';
 import { mat4 } from 'gl-matrix';
 
@@ -25,26 +27,32 @@ const PLANE_CONFIG = {
 	FLOOR: {
 		orientation: XRPlaneOrientation.Horizontal,
 		quaternion: [0, 0, 0, 1],
+		semanticLabel: 'floor',
 	},
 	CEILING: {
 		orientation: XRPlaneOrientation.Horizontal,
 		quaternion: [0, 0, 1, 0],
+		semanticLabel: 'ceiling',
 	},
 	RIGHT: {
 		orientation: XRPlaneOrientation.Vertical,
 		quaternion: [0, 0, 0.7071068, 0.7071068],
+		semanticLabel: 'wall',
 	},
 	LEFT: {
 		orientation: XRPlaneOrientation.Vertical,
 		quaternion: [0, 0, -0.7071068, 0.7071068],
+		semanticLabel: 'wall',
 	},
 	FRONT: {
 		orientation: XRPlaneOrientation.Vertical,
 		quaternion: [0.7071068, 0, 0, 0.7071068],
+		semanticLabel: 'wall',
 	},
 	BACK: {
 		orientation: XRPlaneOrientation.Vertical,
 		quaternion: [-0.7071068, 0, 0, 0.7071068],
+		semanticLabel: 'wall',
 	},
 };
 const DEFAULT_ROOM_DIMENSION = {
@@ -65,7 +73,30 @@ const buildXRPlane = (width, length, position, planeConfig) => {
 		new DOMPointReadOnly(-width, 0, length),
 		new DOMPointReadOnly(width, 0, length),
 	];
-	return new XRPlane(planeSpace, points, planeConfig.orientation);
+	return new XRPlane(
+		planeSpace,
+		points,
+		planeConfig.orientation,
+		planeConfig.semanticLabel,
+	);
+};
+
+/**
+ * @param {THREE.Mesh} mesh
+ */
+const buildXRMesh = (mesh) => {
+	const meshMatrix = new Float32Array(16);
+	mat4.fromRotationTranslation(
+		meshMatrix,
+		mesh.quaternion.toArray(),
+		mesh.position.toArray(),
+	);
+	const meshSpace = new XRSpace();
+	meshSpace._baseMatrix = meshMatrix;
+	const indices = mesh.geometry.index.array;
+	const vertices = mesh.geometry.getAttribute('position').array;
+	const semanticLabel = mesh.userData.semanticLabel;
+	return new XRMesh(meshSpace, vertices, indices, semanticLabel);
 };
 
 class XRRoomFactory {
@@ -190,6 +221,7 @@ export default class XRScene {
 		this.hitTestMarker = new Object3D();
 		this.hitTestMarker.rotateX(-Math.PI / 2);
 		this.hitTestTarget.add(this.hitTestMarker);
+		this.userObjects = {};
 	}
 
 	inject(canvasContainer) {
@@ -206,7 +238,7 @@ export default class XRScene {
 
 	eject() {
 		const element = this.renderer.domElement;
-		element.parentElement.removeChild(element);
+		element.parentElement.remove();
 	}
 
 	setCanvas(canvas) {
@@ -249,6 +281,94 @@ export default class XRScene {
 	}
 
 	get xrPlanes() {
-		return this.roomFactory.xrPlanes;
+		return [
+			...this.roomFactory.xrPlanes,
+			...Object.values(this.userObjects)
+				.filter((object) => object.userData.type === 'plane')
+				.map((object) => object.userData.xrObjectRef),
+		];
+	}
+
+	get xrMeshes() {
+		return new Set(
+			Object.values(this.userObjects)
+				.filter((object) => object.userData.type === 'mesh')
+				.map((object) => object.userData.xrObjectRef),
+		);
+	}
+
+	updateUserObjects(objects) {
+		// filter out hidden objects
+		[...Object.keys(objects)].forEach((userObjectId) => {
+			if (!objects[userObjectId].active) {
+				delete objects[userObjectId];
+			}
+		});
+		Object.entries(objects).forEach(([userObjectId, objectData]) => {
+			const {
+				type,
+				width,
+				height,
+				depth,
+				isVertical,
+				semanticLabel,
+				position,
+				quaternion,
+			} = objectData;
+			let object;
+			if (type === 'mesh') {
+				if (!this.userObjects[userObjectId]) {
+					const mesh = new Mesh(
+						new BoxGeometry(width, height, depth),
+						new MeshBasicMaterial({ color: 0xffffff * Math.random() }),
+					);
+					mesh.userData = { type, semanticLabel };
+					this.userObjects[userObjectId] = mesh;
+					this.scene.add(mesh);
+					mesh.userData.xrObjectRef = buildXRMesh(mesh);
+				}
+				object = this.userObjects[userObjectId];
+			} else if (type === 'plane') {
+				if (!this.userObjects[userObjectId]) {
+					const planeGeometry = new PlaneGeometry(width, height);
+					planeGeometry.rotateX(Math.PI / 2);
+					const mesh = new Mesh(
+						planeGeometry,
+						new MeshBasicMaterial({
+							color: 0xffffff * Math.random(),
+							side: DoubleSide,
+						}),
+					);
+					mesh.userData = { type, semanticLabel };
+					this.userObjects[userObjectId] = mesh;
+					this.scene.add(mesh);
+					mesh.userData.xrObjectRef = buildXRPlane(
+						width / 2,
+						height / 2,
+						position,
+						{
+							orientation: isVertical
+								? XRPlaneOrientation.Vertical
+								: XRPlaneOrientation.Horizontal,
+							quaternion,
+							semanticLabel,
+						},
+					);
+				}
+				object = this.userObjects[userObjectId];
+			}
+			if (object) {
+				object.position.fromArray(position);
+				object.quaternion.fromArray(quaternion);
+				object.userData.xrObjectRef._updateMatrix(position, quaternion);
+			}
+		});
+
+		Object.keys(this.userObjects)
+			.filter((key) => !Object.keys(objects).includes(key))
+			.forEach((key) => {
+				this.userObjects[key].parent.remove(this.userObjects[key]);
+				delete this.userObjects[key];
+			});
 	}
 }

@@ -4,42 +4,55 @@
  * This source code is licensed under the MIT license found in the
  * LICENSE file in the root directory of this source tree.
  */
-
+import babel from '@rollup/plugin-babel';
 import cleanup from 'rollup-plugin-cleanup';
-import commonjs from 'rollup-plugin-commonjs';
+import commonjs from '@rollup/plugin-commonjs';
 import copy from 'rollup-plugin-copy';
 import css from 'rollup-plugin-import-css';
-import replace from 'rollup-plugin-replace';
-import resolve from 'rollup-plugin-node-resolve';
-
+import { nodeResolve } from '@rollup/plugin-node-resolve';
+import replace from '@rollup/plugin-replace';
 export default [
 	{
-		input: './src/devtool/devtool-panel.js',
+		input: './src/devtool/devtool-panel.jsx',
 		output: {
 			file: './dist/devtool-panel.js',
 			format: 'umd',
 			name: 'immersive-web-emulator-devtool',
 		},
 		plugins: [
-			replace({
-				'process.env.NODE_ENV': JSON.stringify('production'),
+			nodeResolve({
+				extensions: ['.js', 'jsx'],
+				preferBuiltins: false,
 			}),
-			resolve(),
+			babel({
+				babelHelpers: 'bundled',
+				presets: [
+					[
+						'@babel/preset-react',
+						{
+							runtime: 'automatic',
+						},
+					],
+				],
+				extensions: ['.jsx'],
+			}),
 			commonjs(),
 			cleanup({
 				comments: 'none',
 			}),
 			css(),
+			replace({
+				preventAssignment: true,
+				'process.env.NODE_ENV': JSON.stringify('production'),
+			}),
 			copy({
 				targets: [
 					{ src: 'src/devtool/devtool-panel.html', dest: 'dist' },
+					{ src: 'src/devtool/assets/*', dest: 'dist/assets' },
 					{ src: 'src/extension/devtools.html', dest: 'dist' },
 					{ src: 'src/extension/devtools.js', dest: 'dist' },
 					{ src: 'src/extension/popup.html', dest: 'dist' },
 					{ src: 'src/extension/popup.js', dest: 'dist' },
-					{ src: 'src/devtool/ui-components/*', dest: 'dist/ui-components' },
-					{ src: 'src/devtool/styles/*', dest: 'dist/styles' },
-					{ src: 'src/devtool/assets/*', dest: 'dist/assets' },
 				],
 			}),
 		],
@@ -53,9 +66,10 @@ export default [
 		},
 		plugins: [
 			replace({
+				preventAssignment: true,
 				'process.env.NODE_ENV': JSON.stringify('production'),
 			}),
-			resolve(),
+			nodeResolve(),
 			commonjs(),
 			cleanup({
 				comments: 'none',
@@ -71,9 +85,10 @@ export default [
 		},
 		plugins: [
 			replace({
+				preventAssignment: true,
 				'process.env.NODE_ENV': JSON.stringify('production'),
 			}),
-			resolve(),
+			nodeResolve(),
 			commonjs(),
 			cleanup({
 				comments: 'none',

@@ -5,17 +5,20 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+import { EventEmitter } from 'events';
+
 const CIRCUMFERENCE = 2 * Math.PI;
-const LINEWIDTH = 6;
+const LINEWIDTH = 4;
 const OUTER_STROKE_COLOR = '#e4e6eb';
 const INNER_FILL_COLOR = '#317BEF';
 
-export class Joystick {
+export class Joystick extends EventEmitter {
 	constructor(size, autoReturn, renderScale = 2) {
+		super();
 		this._renderScale = renderScale;
 		this._autoReturn = autoReturn;
 
-		let canvas = document.createElement('canvas');
+		const canvas = document.createElement('canvas');
 		canvas.id = 'Joystick';
 		canvas.width = size * renderScale;
 		canvas.height = size * renderScale;
@@ -45,7 +48,7 @@ export class Joystick {
 	}
 
 	_drawOuterCircle() {
-		let context = this._canvas.getContext('2d');
+		const context = this._canvas.getContext('2d');
 		context.imageSmoothingQuality = 'high';
 		context.beginPath();
 		context.arc(
@@ -63,12 +66,12 @@ export class Joystick {
 	}
 
 	_drawInnerCircle() {
-		let context = this._canvas.getContext('2d');
+		const context = this._canvas.getContext('2d');
 		context.beginPath();
-		let deltaDistance = Math.sqrt(
+		const deltaDistance = Math.sqrt(
 			this._deltaX * this._deltaX + this._deltaY * this._deltaY,
 		);
-		let scaleFactor = deltaDistance / this._maxStickDelta;
+		const scaleFactor = deltaDistance / this._maxStickDelta;
 		if (scaleFactor > 1) {
 			this._deltaX /= scaleFactor;
 			this._deltaY /= scaleFactor;
@@ -95,7 +98,7 @@ export class Joystick {
 	}
 
 	_onMouseUp(_event) {
-		let context = this._canvas.getContext('2d');
+		const context = this._canvas.getContext('2d');
 		this._pressed = false;
 
 		if (this._autoReturn) {
@@ -112,7 +115,7 @@ export class Joystick {
 
 	_onMouseMove(event) {
 		if (this._pressed) {
-			let context = this._canvas.getContext('2d');
+			const context = this._canvas.getContext('2d');
 			this._deltaX = (event.pageX - this._refX) * this._renderScale;
 			this._deltaY = (event.pageY - this._refY) * this._renderScale;
 
@@ -125,13 +128,11 @@ export class Joystick {
 	}
 
 	_dispatchEvent() {
-		this._canvas.parentElement.dispatchEvent(
-			new Event('joystickmove', { joystick: this }),
-		);
+		this.emit('joystickmove');
 	}
 
 	overrideMove(x, y) {
-		let context = this._canvas.getContext('2d');
+		const context = this._canvas.getContext('2d');
 		this._deltaX = x * this._maxStickDelta;
 		this._deltaY = y * this._maxStickDelta;
 

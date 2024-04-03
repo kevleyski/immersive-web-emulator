@@ -10,14 +10,20 @@ import XRFrame, {
 import XRSession, {
 	PRIVATE as XRSESSION_PRIVATE,
 } from 'webxr-polyfill/src/api/XRSession';
+import { mat4, quat, vec3 } from 'gl-matrix';
 
 import API from 'webxr-polyfill/src/api/index';
 import EX_API from './api/index';
 import EmulatedXRDevice from './EmulatedXRDevice';
+import { HAND_POSES } from './api/handPose';
 import { POLYFILL_ACTIONS } from '../src/devtool/js/actions';
 import WebXRPolyfill from 'webxr-polyfill/src/WebXRPolyfill';
+import { PRIVATE as XRHAND_PRIVATE } from './api/XRHand';
 import XRHitTestResult from './api/XRHitTestResult';
 import XRHitTestSource from './api/XRHitTestSource';
+import { PRIVATE as XRJOINTSPACE_PRIVATE } from './api/XRJointSpace';
+import { XRJointPose } from './api/XRJointPose';
+import { XRMeshSet } from './api/XRMesh';
 import { XRPlaneSet } from './api/XRPlane';
 import XRReferenceSpace from 'webxr-polyfill/src/api/XRReferenceSpace';
 import XRRigidTransform from 'webxr-polyfill/src/api/XRRigidTransform';
@@ -26,7 +32,45 @@ import XRSystem from 'webxr-polyfill/src/api/XRSystem';
 import XRTransientInputHitTestResult from './api/XRTransientInputHitTestResult';
 import XRTransientInputHitTestSource from './api/XRTransientInputHitTestSource';
 import { XR_COMPATIBLE } from 'webxr-polyfill/src/constants';
-import { mat4 } from 'gl-matrix';
+
+const handMatrixInvert = [1, -1, -1, 0, -1, 1, 1, 0, -1, 1, 1, 0, -1, 1, 1, 1];
+const getJointMatrix = (handPose, jointName, handedness) => {
+	const rawTransform = [...handPose[jointName].transform];
+	if (handedness == 'right') {
+		for (let i = 0; i < 16; i++) {
+			rawTransform[i] = rawTransform[i] * handMatrixInvert[i];
+		}
+	}
+	return mat4.fromValues(...rawTransform);
+};
+const interpolateMatrix = (fromMatrix, toMatrix, alpha) => {
+	const fromPosition = vec3.create();
+	mat4.getTranslation(fromPosition, fromMatrix);
+	const fromQuaternion = quat.create();
+	mat4.getRotation(fromQuaternion, fromMatrix);
+	const fromScale = vec3.create();
+	mat4.getScaling(fromScale, fromMatrix);
+	const toPosition = vec3.create();
+	mat4.getTranslation(toPosition, toMatrix);
+	const toQuaternion = quat.create();
+	mat4.getRotation(toQuaternion, toMatrix);
+	const toScale = vec3.create();
+	mat4.getScaling(toScale, toMatrix);
+	const interpolatedPosition = vec3.create();
+	vec3.lerp(interpolatedPosition, fromPosition, toPosition, alpha);
+	const interpolatedQuaternion = quat.create();
+	quat.slerp(interpolatedQuaternion, fromQuaternion, toQuaternion, alpha);
+	const interpolatedScale = vec3.create();
+	vec3.lerp(interpolatedScale, fromScale, toScale, alpha);
+	const out = mat4.create();
+	mat4.fromRotationTranslationScale(
+		out,
+		interpolatedQuaternion,
+		interpolatedPosition,
+		interpolatedScale,
+	);
+	return out;
+};
 
 export default class CustomWebXRPolyfill extends WebXRPolyfill {
 	constructor() {
@@ -77,9 +121,11 @@ export default class CustomWebXRPolyfill extends WebXRPolyfill {
 		};
 
 		// add event listener for onreset event, but do nothing since we cannot re-center in emulator
-		XRReferenceSpace.prototype.addEventListener = () => {};
+		XRReferenceSpace.prototype.addEventListener = () => {
+			// do nothing
+		};
 
-		window.addEventListener(POLYFILL_ACTIONS.EXIT_IMMERSIVE, (_event) => {
+		window.addEventListener(POLYFILL_ACTIONS.EXIT_IMMERSIVE, () => {
 			if (activeImmersiveSession && !activeImmersiveSession.ended) {
 				activeImmersiveSession.end().then(() => {
 					activeImmersiveSession = null;
@@ -127,7 +173,11 @@ export default class CustomWebXRPolyfill extends WebXRPolyfill {
 
 		Object.defineProperty(XRSession.prototype, 'persistentAnchors', {
 			get: function () {
-				if (this.persistentAnchorsMap != null) {
+				const device = this[XRSESSION_PRIVATE].device;
+				const session = device.sessions.get(this[XRSESSION_PRIVATE].id);
+				if (!session.enabledFeatures.has('anchors')) {
+					return [];
+				} else if (this.persistentAnchorsMap != null) {
 					return Object.freeze(Array.from(this.persistentAnchorsMap.keys()));
 				} else {
 					return [];
@@ -136,6 +186,16 @@ export default class CustomWebXRPolyfill extends WebXRPolyfill {
 		});
 
 		XRSession.prototype.restorePersistentAnchor = async function (uuid) {
+			const device = this[XRSESSION_PRIVATE].device;
+			const session = device.sessions.get(this[XRSESSION_PRIVATE].id);
+			if (!session.enabledFeatures.has('anchors')) {
+				return Promise.reject(
+					new DOMException(
+						"Failed to execute 'restorePersistentAnchor' on 'XRFrame': Anchors feature is not supported by the session.",
+						'NotSupportedError',
+					),
+				);
+			}
 			if (!this.persistentAnchors.includes(uuid)) {
 				throw new DOMException(
 					'specified persistent anchor cannot be found',
@@ -153,6 +213,16 @@ export default class CustomWebXRPolyfill extends WebXRPolyfill {
 		};
 
 		XRSession.prototype.deletePersistentAnchor = async function (uuid) {
+			const device = this[XRSESSION_PRIVATE].device;
+			const session = device.sessions.get(this[XRSESSION_PRIVATE].id);
+			if (!session.enabledFeatures.has('anchors')) {
+				return Promise.reject(
+					new DOMException(
+						"Failed to execute 'deletePersistentAnchor' on 'XRFrame': Anchors feature is not supported by the session.",
+						'NotSupportedError',
+					),
+				);
+			}
 			if (!this.persistentAnchors.includes(uuid)) {
 				throw new DOMException(
 					'specified persistent anchor cannot be found',
@@ -177,9 +247,18 @@ export default class CustomWebXRPolyfill extends WebXRPolyfill {
 		 */
 		XRFrame.prototype.createAnchor = async function (pose, space) {
 			const session = this[XRFRAME_PRIVATE].session;
+			const device = this[XRFRAME_PRIVATE].device;
+			const xrSession = device.sessions.get(session[XRSESSION_PRIVATE].id);
+			if (!xrSession.enabledFeatures.has('anchors')) {
+				return Promise.reject(
+					new DOMException(
+						"Failed to execute 'createAnchor' on 'XRFrame': Anchors feature is not supported by the session.",
+						'NotSupportedError',
+					),
+				);
+			}
 			const localRefSpace = await session.requestReferenceSpace('local');
 
-			const device = this[XRFRAME_PRIVATE].device;
 			let currentSpaceTransform = null;
 			if (
 				space._specialType === 'target-ray' ||
@@ -218,8 +297,14 @@ export default class CustomWebXRPolyfill extends WebXRPolyfill {
 
 		Object.defineProperty(XRFrame.prototype, 'trackedAnchors', {
 			get: function () {
-				const session = this[XRFRAME_PRIVATE].session;
-				return new XRAnchorSet(session.getTrackedAnchors());
+				const xrSession = this[XRFRAME_PRIVATE].session;
+				const device = this[XRFRAME_PRIVATE].device;
+				const session = device.sessions.get(xrSession[XRSESSION_PRIVATE].id);
+				if (!session.enabledFeatures.has('anchors')) {
+					return new XRAnchorSet();
+				} else {
+					return new XRAnchorSet(xrSession.getTrackedAnchors());
+				}
 			},
 		});
 
@@ -230,11 +315,115 @@ export default class CustomWebXRPolyfill extends WebXRPolyfill {
 			},
 		});
 
+		Object.defineProperty(XRFrame.prototype, 'detectedMeshes', {
+			get: function () {
+				const device = this[XRFRAME_PRIVATE].device;
+				return new XRMeshSet(device.xrScene.xrMeshes);
+			},
+		});
+
+		XRFrame.prototype.getJointPose = function (joint, baseSpace) {
+			const xrhand = joint[XRJOINTSPACE_PRIVATE].xrhand;
+			const xrInputSource = xrhand[XRHAND_PRIVATE].inputSource;
+			const handedness = xrInputSource.handedness;
+			const device = this[XRFRAME_PRIVATE].device;
+			const poseId = device.handPoseData[handedness].poseId;
+			const pinchValue = device.handPoseData[handedness].pinchValue;
+			const handPose = HAND_POSES[poseId];
+			const pinchPose = HAND_POSES.pinch;
+
+			// the joints transforms are sampled with gripSpace as the reference space
+			const gripMatrix = new Float32Array(16);
+			if (baseSpace == xrInputSource.gripSpace) {
+				mat4.fromRotationTranslation(gripMatrix, quat.create(), vec3.create());
+			} else {
+				const gripPose = this.getPose(xrInputSource.gripSpace, baseSpace);
+				mat4.copy(gripMatrix, gripPose.transform.matrix);
+			}
+
+			const jointMatrix = getJointMatrix(handPose, joint.jointName, handedness);
+			const pinchMatrix = getJointMatrix(
+				pinchPose,
+				joint.jointName,
+				handedness,
+			);
+			const isPinchJoint =
+				joint.jointName.startsWith('thumb') ||
+				joint.jointName.startsWith('index');
+			const interpolatedMatrix = interpolateMatrix(
+				jointMatrix,
+				pinchMatrix,
+				isPinchJoint ? pinchValue : 0,
+			);
+
+			const out = new Float32Array(16);
+			mat4.multiply(out, gripMatrix, interpolatedMatrix);
+			return new XRJointPose(
+				new XRRigidTransform(out),
+				handPose[joint.jointName].radius,
+			);
+		};
+
+		/**
+		 * @param {IterableIterator<import('./api/XRJointSpace').XRJointSpace>} jointSpaces
+		 * @param {Float32Array} radii
+		 */
+		XRFrame.prototype.fillJointRadii = function (jointSpaces, radii) {
+			const spaces = Array.from(jointSpaces);
+			if (spaces.length > radii.length) {
+				throw new TypeError('radii array size insufficient');
+			}
+			spaces.forEach((jointSpace, i) => {
+				const xrhand = jointSpace[XRJOINTSPACE_PRIVATE].xrhand;
+				const xrInputSource = xrhand[XRHAND_PRIVATE].inputSource;
+				const handedness = xrInputSource.handedness;
+				const device = this[XRFRAME_PRIVATE].device;
+				const poseId = device.handPoseData[handedness].poseId;
+				const handPose = HAND_POSES[poseId];
+				const jointName = jointSpace.jointName;
+				radii[i] = handPose[jointName].radius;
+			});
+			return true;
+		};
+
+		/**
+		 * @param {IterableIterator<XRSpace>} spaces
+		 * @param {XRSpace} baseSpace
+		 * @param {Float32Array} transforms
+		 */
+		XRFrame.prototype.fillPoses = function (spaces, baseSpace, transforms) {
+			const spacesArray = Array.from(spaces);
+			if (transforms.length < spaces.length * 16) {
+				throw new TypeError('transforms array size insufficient');
+			}
+			spacesArray.forEach((space, i) => {
+				let pose;
+				if (space.jointName) {
+					pose = this.getJointPose(space, baseSpace);
+				} else {
+					pose = this.getPose(space, baseSpace);
+				}
+				for (let j = 0; j < 16; j++) {
+					transforms[i * 16 + j] = pose.transform.matrix[j];
+				}
+			});
+			return true;
+		};
+
 		// Extending XRSession and XRFrame for AR hitting test API.
 
 		XRSession.prototype.requestHitTestSource = function (options) {
-			const source = new XRHitTestSource(this, options);
 			const device = this[XRSESSION_PRIVATE].device;
+			const session = device.sessions.get(this[XRSESSION_PRIVATE].id);
+			if (!session.enabledFeatures.has('hit-test')) {
+				return Promise.reject(
+					new DOMException(
+						'hit-test feature not requested or not supported',
+						'NotSupportedError',
+					),
+				);
+			}
+			const source = new XRHitTestSource(this, options);
 			device.addHitTestSource(source);
 			return Promise.resolve(source);
 		};
@@ -242,11 +431,40 @@ export default class CustomWebXRPolyfill extends WebXRPolyfill {
 		XRSession.prototype.requestHitTestSourceForTransientInput = function (
 			options,
 		) {
-			const source = new XRTransientInputHitTestSource(this, options);
 			const device = this[XRSESSION_PRIVATE].device;
+			const session = device.sessions.get(this[XRSESSION_PRIVATE].id);
+			if (!session.enabledFeatures.has('hit-test')) {
+				return Promise.reject(
+					new DOMException(
+						'hit-test feature not requested or not supported',
+						'NotSupportedError',
+					),
+				);
+			}
+			const source = new XRTransientInputHitTestSource(this, options);
 			device.addHitTestSourceForTransientInput(source);
 			return Promise.resolve(source);
 		};
+
+		Object.defineProperty(XRSession.prototype, 'enabledFeatures', {
+			get: function () {
+				const device = this[XRSESSION_PRIVATE].device;
+				const session = device.sessions.get(this[XRSESSION_PRIVATE].id);
+				return Object.freeze(Array.from(session.enabledFeatures));
+			},
+		});
+
+		Object.defineProperty(XRSession.prototype, 'inputSources', {
+			get: function () {
+				const device = this[XRSESSION_PRIVATE].device;
+				const inputSources = device.getInputSources();
+				const session = device.sessions.get(this[XRSESSION_PRIVATE].id);
+				if (!session.enabledFeatures.has('hand-tracking')) {
+					return inputSources.filter((inputSource) => inputSource.hand == null);
+				}
+				return inputSources;
+			},
+		});
 
 		XRFrame.prototype.getHitTestResults = function (hitTestSource) {
 			const device = this.session[XRSESSION_PRIVATE].device;

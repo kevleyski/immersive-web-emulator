@@ -6,22 +6,20 @@
  */
 
 import { CLIENT_ACTIONS, EMULATOR_ACTIONS } from './actions';
-import { DEVICE, OBJECT_NAME } from './constants';
+import { DEVICE, HAND_STRINGS, OBJECT_NAME } from './constants';
 import { EmulatorSettings, emulatorStates } from './emulatorStates';
 
-// eslint-disable-next-line no-undef
 const tabId = chrome.devtools.inspectedWindow.tabId;
 
 const connection = {
 	port: null,
 	connect: () => {
-		// eslint-disable-next-line no-undef
 		connection.port = chrome.runtime.connect(null, { name: 'iwe_devtool' });
 		connection.port.onMessage.addListener((payload) => {
 			switch (payload.action) {
 				case CLIENT_ACTIONS.ENTER_IMMERSIVE:
 					emulatorStates.inImmersive = true;
-					applyAllPoseChanges();
+					emulatorStates.emulatedDevice?.forceEmitPose();
 					break;
 				case CLIENT_ACTIONS.EXIT_IMMERSIVE:
 					emulatorStates.inImmersive = false;
@@ -43,21 +41,18 @@ const executeAction = (action, payload = {}) => {
 	}
 };
 
-const applyHeadsetPoseChange = (node) => {
-	executeAction(EMULATOR_ACTIONS.HEADSET_POSE_CHANGE, {
-		position: node.position.toArray(),
-		quaternion: node.quaternion.toArray(),
-	});
-};
-
-export const applyDevicePoseChange = (key, node) => {
-	if (key === DEVICE.HEADSET) {
-		applyHeadsetPoseChange(node);
+export const syncDevicePose = (event) => {
+	const { deviceKey, position, quaternion } = event;
+	if (deviceKey === DEVICE.HEADSET) {
+		executeAction(EMULATOR_ACTIONS.HEADSET_POSE_CHANGE, {
+			position,
+			quaternion,
+		});
 	} else {
 		executeAction(EMULATOR_ACTIONS.CONTROLLER_POSE_CHANGE, {
-			objectName: OBJECT_NAME[key],
-			position: node.position.toArray(),
-			quaternion: node.quaternion.toArray(),
+			objectName: OBJECT_NAME[deviceKey],
+			position,
+			quaternion,
 		});
 	}
 };
@@ -109,18 +104,6 @@ export const relayKeyboardEvent = (eventType, eventOptions) => {
 	});
 };
 
-export const applyAllPoseChanges = () => {
-	for (const key in emulatorStates.assetNodes) {
-		if (emulatorStates.assetNodes[key]) {
-			if (key === DEVICE.HEADSET) {
-				applyHeadsetPoseChange(emulatorStates.assetNodes[key]);
-			} else {
-				applyDevicePoseChange(key, emulatorStates.assetNodes[key]);
-			}
-		}
-	}
-};
-
 export const notifyExitImmersive = () => {
 	executeAction(EMULATOR_ACTIONS.EXIT_IMMERSIVE);
 };
@@ -129,4 +112,63 @@ export const changeRoomDimension = () => {
 	executeAction(EMULATOR_ACTIONS.ROOM_DIMENSION_CHANGE, {
 		dimension: EmulatorSettings.instance.roomDimension,
 	});
+};
+
+export const changeInputMode = () => {
+	executeAction(EMULATOR_ACTIONS.INPUT_MODE_CHANGE, {
+		inputMode: EmulatorSettings.instance.inputMode,
+	});
+};
+
+export const changeHandPose = (deviceId) => {
+	const handName = HAND_STRINGS[deviceId].name;
+	executeAction(EMULATOR_ACTIONS.HAND_POSE_CHANGE, {
+		handedness: deviceId === DEVICE.INPUT_LEFT ? 'left' : 'right',
+		pose: EmulatorSettings.instance.handPoses[handName],
+	});
+};
+
+export const updatePinchValue = (deviceId) => {
+	const handName = HAND_STRINGS[deviceId].name;
+	executeAction(EMULATOR_ACTIONS.PINCH_VALUE_CHANGE, {
+		handedness: deviceId === DEVICE.INPUT_LEFT ? 'left' : 'right',
+		value: emulatorStates.pinchValues[handName],
+	});
+};
+
+export const togglePolyfill = () => {
+	chrome.tabs.get(tabId, (tab) => {
+		const url = new URL(tab.url);
+		const urlMatchPattern = url.origin + '/*';
+		if (EmulatorSettings.instance.polyfillExcludes.has(urlMatchPattern)) {
+			EmulatorSettings.instance.polyfillExcludes.delete(urlMatchPattern);
+		} else {
+			EmulatorSettings.instance.polyfillExcludes.add(urlMatchPattern);
+		}
+		EmulatorSettings.instance.write().then(() => {
+			executeAction(EMULATOR_ACTIONS.EXCLUDE_POLYFILL);
+		});
+	});
+};
+
+export const toggleControllerVisibility = (deviceKey, visible) => {
+	executeAction(EMULATOR_ACTIONS.CONTROLLER_VISIBILITY_CHANGE, {
+		objectName: OBJECT_NAME[deviceKey],
+		visible,
+	});
+};
+
+export const toggleHandVisibility = (deviceId, visible) => {
+	executeAction(EMULATOR_ACTIONS.HAND_VISIBILITY_CHANGE, {
+		handedness: HAND_STRINGS[deviceId].handedness,
+		visible,
+	});
+};
+
+export const reloadInspectedTab = () => {
+	executeAction(EMULATOR_ACTIONS.EXCLUDE_POLYFILL);
+};
+
+export const updateUserObjects = () => {
+	executeAction(EMULATOR_ACTIONS.USER_OBJECTS_CHANGE);
 };

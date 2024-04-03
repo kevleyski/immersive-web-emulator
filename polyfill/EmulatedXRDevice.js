@@ -2,9 +2,10 @@ import { CLIENT_ACTIONS, POLYFILL_ACTIONS } from '../src/devtool/js/actions';
 import { mat4, quat, vec3 } from 'gl-matrix';
 
 import GamepadMappings from 'webxr-polyfill/src/devices/GamepadMappings';
-import GamepadXRInputSource from 'webxr-polyfill/src/devices/GamepadXRInputSource';
+import GamepadXRInputSource from './api/XRGamepadInput';
+import HandXRInputSource from './api/XRHandInput';
 import XRDevice from 'webxr-polyfill/src/devices/XRDevice';
-import { PRIVATE as XRINPUTSOURCE_PRIVATE } from 'webxr-polyfill/src/api/XRInputSource';
+import { PRIVATE as XRINPUTSOURCE_PRIVATE } from './api/XRInputSource';
 import { PRIVATE as XRSESSION_PRIVATE } from 'webxr-polyfill/src/api/XRSession';
 import XRScene from './XRScene';
 import XRTransientInputHitTestSource from './api/XRTransientInputHitTestSource';
@@ -58,9 +59,19 @@ export default class EmulatedXRDevice extends XRDevice {
 		this.leftViewMatrix = mat4.create();
 		this.rightViewMatrix = mat4.create();
 
+		this.handMode = true;
+		this.handPoseData = {
+			left: { poseId: 'relaxed', pinchValue: 0, prevPinchValue: 0 },
+			right: { poseId: 'relaxed', pinchValue: 0, prevPinchValue: 0 },
+		};
+
 		// controllers
 		this.gamepads = [];
 		this.gamepadInputSources = [];
+
+		// hands
+		this.handGamepads = [];
+		this.handInputSources = [];
 
 		// other configurations
 		this.stereoEffectEnabled =
@@ -81,6 +92,7 @@ export default class EmulatedXRDevice extends XRDevice {
 		};
 
 		this.appCanvasContainer = createCanvasContainer(APP_CANVAS_Z_INDEX);
+		// console.log(this.appCanvasContainer);
 		this.arCanvasContainer = createCanvasContainer(AR_CANVAS_Z_INDEX);
 
 		this.originalCanvasParams = {
@@ -111,6 +123,7 @@ export default class EmulatedXRDevice extends XRDevice {
 
 		//
 		this._initializeControllers(config);
+		this._initializeHands();
 		this._setupEventListeners();
 	}
 
@@ -159,6 +172,10 @@ export default class EmulatedXRDevice extends XRDevice {
 				console.warn(
 					'The high-fixed-foveation-level feature is non-standard and deprecated. Refer to the documentation at https://immersive-web.github.io/layers/#dom-xrprojectionlayer-fixedfoveation for the standard way to adjust fixed foveation level.',
 				);
+				return true;
+			case 'hand-tracking':
+				return true;
+			case 'mesh-detection':
 				return true;
 			default:
 				return false; // @TODO: Throw an error?
@@ -228,6 +245,10 @@ export default class EmulatedXRDevice extends XRDevice {
 			context.clearStencil(currentClearStencil);
 		}
 
+		this.gamepads.forEach((gamepad) => {
+			gamepad.connected = session.immersive;
+		});
+
 		if (session.vr || (session.ar && session.immersive)) {
 			// @TODO: proper FOV
 			const aspect = (width * (this.stereoEffectEnabled ? 0.5 : 1.0)) / height;
@@ -295,8 +316,14 @@ export default class EmulatedXRDevice extends XRDevice {
 			for (let i = 0; i < this.gamepads.length; ++i) {
 				const gamepad = this.gamepads[i];
 				const inputSourceImpl = this.gamepadInputSources[i];
+				const handInputImpl = this.handInputSources[i];
 				inputSourceImpl.updateFromGamepad(gamepad);
-				if (inputSourceImpl.primaryButtonIndex !== -1) {
+				const handedness = handInputImpl.handedness;
+				const pinchValue = this.handPoseData[handedness]
+					? this.handPoseData[handedness].pinchValue
+					: 0;
+				handInputImpl.updateFromGamepad(gamepad, pinchValue);
+				if (inputSourceImpl.primaryButtonIndex !== -1 && inputSourceImpl.active) {
 					const primaryActionPressed =
 						gamepad.buttons[inputSourceImpl.primaryButtonIndex].pressed;
 					if (primaryActionPressed && !inputSourceImpl.primaryActionPressed) {
@@ -315,7 +342,7 @@ export default class EmulatedXRDevice extends XRDevice {
 					}
 					// imputSourceImpl.primaryActionPressed is updated in onFrameEnd().
 				}
-				if (inputSourceImpl.primarySqueezeButtonIndex !== -1) {
+				if (inputSourceImpl.primarySqueezeButtonIndex !== -1 && inputSourceImpl.active) {
 					const primarySqueezeActionPressed =
 						gamepad.buttons[inputSourceImpl.primarySqueezeButtonIndex].pressed;
 					if (
@@ -338,6 +365,26 @@ export default class EmulatedXRDevice extends XRDevice {
 					inputSourceImpl.primarySqueezeActionPressed =
 						primarySqueezeActionPressed;
 				}
+				if (
+					this.handPoseData[gamepad.hand].pinchValue == 1 &&
+					this.handPoseData[gamepad.hand].prevPinchValue != 1
+				) {
+					this.dispatchEvent('@@webxr-polyfill/input-select-start', {
+						sessionId: session.id,
+						inputSource: handInputImpl.inputSource,
+					});
+				}
+				if (
+					this.handPoseData[gamepad.hand].pinchValue != 1 &&
+					this.handPoseData[gamepad.hand].prevPinchValue == 1
+				) {
+					this.dispatchEvent('@@webxr-polyfill/input-select-end', {
+						sessionId: session.id,
+						inputSource: handInputImpl.inputSource,
+					});
+				}
+				this.handPoseData[gamepad.hand].prevPinchValue =
+					this.handPoseData[gamepad.hand].pinchValue;
 			}
 
 			this._hitTest(sessionId, this.hitTestSources, this.hitTestResults);
@@ -399,7 +446,7 @@ export default class EmulatedXRDevice extends XRDevice {
 			this._removeBaseLayerCanvasFromDiv(sessionId);
 			this.domOverlayRoot = null;
 			this.dispatchEvent('@@webxr-polyfill/vr-present-end', sessionId);
-			this._notifyLeaveImmersive();
+			this._notifyLeaveImmersive(sessionId);
 		}
 		session.ended = true;
 	}
@@ -464,16 +511,22 @@ export default class EmulatedXRDevice extends XRDevice {
 
 	getInputSources() {
 		const inputSources = [];
-		for (const inputSourceImpl of this.gamepadInputSources) {
+		for (const inputSourceImpl of this.handMode
+			? this.handInputSources
+			: this.gamepadInputSources) {
 			if (inputSourceImpl.active) {
 				inputSources.push(inputSourceImpl.inputSource);
 			}
 		}
+
 		return inputSources;
 	}
 
 	getInputPose(inputSource, coordinateSystem, poseType) {
-		for (const inputSourceImpl of this.gamepadInputSources) {
+		for (const inputSourceImpl of [].concat(
+			this.gamepadInputSources,
+			this.handInputSources,
+		)) {
 			if (inputSourceImpl.inputSource === inputSource) {
 				const pose = inputSourceImpl.getXRPose(coordinateSystem, poseType);
 
@@ -613,11 +666,7 @@ export default class EmulatedXRDevice extends XRDevice {
 		if (this.domOverlayRoot) {
 			const el = this.domOverlayRoot;
 			el.style._zIndex = el.style.zIndex; // Polluting is bad...
-			if (this.domOverlayRoot.contains(this.appCanvasContainer)) {
-				this.appCanvasContainer.style.zIndex = '';
-			} else {
-				el.style.zIndex = DOM_OVERLAY_Z_INDEX;
-			}
+			el.style.zIndex = DOM_OVERLAY_Z_INDEX;
 		}
 	}
 
@@ -722,7 +771,11 @@ export default class EmulatedXRDevice extends XRDevice {
 		dispatchCustomEvent(CLIENT_ACTIONS.ENTER_IMMERSIVE, {});
 	}
 
-	_notifyLeaveImmersive() {
+	_notifyLeaveImmersive(sessionId) {
+		const session = this.sessions.get(sessionId);
+		if (session.mode === 'immersive-ar') {
+			this.arCanvasContainer.remove();
+		}
 		dispatchCustomEvent(CLIENT_ACTIONS.EXIT_IMMERSIVE, {});
 	}
 
@@ -805,6 +858,22 @@ export default class EmulatedXRDevice extends XRDevice {
 		gamepad.axes[axisIndex] = value;
 	}
 
+	_updateControllerInputVisibility(controllerIndex, visible) {
+		if (controllerIndex >= this.gamepadInputSources.length) {
+			throw new Error('ControllerIndex ' + controllerIndex + ' is greater than the gamepadInputSources.length ' + this.gamepadInputSources.length);
+		}
+		const inputSourceImpl = this.gamepadInputSources[controllerIndex];
+		inputSourceImpl.active = visible;
+	}
+
+	_updateHandInputVisibility(handIndex, visible) {
+		if (handIndex >= this.handInputSources.length) {
+			throw new Error('HandIndex ' + handIndex + ' is greater than the handInputSources.length ' + this.handInputSources.length);
+		}
+		const inputSourceImpl = this.handInputSources[handIndex];
+		inputSourceImpl.active = visible;
+	}
+
 	_initializeControllers(config) {
 		const hasController = config.controllers !== undefined;
 		const controllerNum = hasController ? config.controllers.length : 0;
@@ -837,6 +906,15 @@ export default class EmulatedXRDevice extends XRDevice {
 			imputSourceImpl.profilesOverride =
 				GamepadMappings[controller.id].profiles;
 			this.gamepadInputSources.push(imputSourceImpl);
+		}
+	}
+
+	_initializeHands() {
+		this.handInputSources.length = 0;
+		for (let i = 0; i < 2; i++) {
+			const handInputImpl = new HandXRInputSource(this);
+			handInputImpl.active = true;
+			this.handInputSources.push(handInputImpl);
 		}
 	}
 
@@ -913,6 +991,24 @@ export default class EmulatedXRDevice extends XRDevice {
 		);
 
 		window.addEventListener(
+			POLYFILL_ACTIONS.CONTROLLER_VISIBILITY_CHANGE,
+			(event) => {
+				const objectName = event.detail.objectName;
+				const visible = event.detail.visible;
+
+				switch (objectName) {
+					case 'right-controller':
+					case 'left-controller':
+						this._updateControllerInputVisibility(
+							objectName === 'right-controller' ? 0 : 1, // @TODO: remove magic number
+							visible,
+						); 
+						break;
+				}
+			},
+		);
+
+		window.addEventListener(
 			POLYFILL_ACTIONS.BUTTON_STATE_CHANGE,
 			(event) => {
 				const objectName = event.detail.objectName;
@@ -965,6 +1061,45 @@ export default class EmulatedXRDevice extends XRDevice {
 
 		window.addEventListener(POLYFILL_ACTIONS.STEREO_TOGGLE, (event) => {
 			this._updateStereoEffect(event.detail.enabled);
+		});
+
+		window.addEventListener(POLYFILL_ACTIONS.INPUT_MODE_CHANGE, (event) => {
+			this.handMode = event.detail.inputMode === 'hands';
+		});
+
+		window.addEventListener(POLYFILL_ACTIONS.HAND_POSE_CHANGE, (event) => {
+			const handedness = event.detail.handedness;
+			const poseId = event.detail.pose;
+			this.handPoseData[handedness].poseId = poseId;
+		});
+
+		window.addEventListener(
+			POLYFILL_ACTIONS.HAND_VISIBILITY_CHANGE,
+			(event) => {
+				const handedness = event.detail.handedness;
+				const visible = event.detail.visible;
+
+				switch (handedness) {
+					case 'right':
+					case 'left':
+						this._updateHandInputVisibility(
+							handedness === 'right' ? 0 : 1, // @TODO: remove magic number
+							visible,
+						); 
+						break;
+				}
+			},
+		);
+
+		window.addEventListener(POLYFILL_ACTIONS.PINCH_VALUE_CHANGE, (event) => {
+			const handedness = event.detail.handedness;
+			const pinchValue = event.detail.value;
+			this.handPoseData[handedness].pinchValue = pinchValue;
+		});
+
+		window.addEventListener(POLYFILL_ACTIONS.USER_OBJECTS_CHANGE, (event) => {
+			const objects = event.detail.objects;
+			this.xrScene.updateUserObjects(objects);
 		});
 	}
 }
